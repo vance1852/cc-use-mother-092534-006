@@ -63,6 +63,73 @@ CREATE TABLE IF NOT EXISTS audit_events (
     event_hash TEXT NOT NULL UNIQUE,
     occurred_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS stories (
+    story_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    external_key TEXT NOT NULL,
+    submitter_actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+    current_version INTEGER NOT NULL CHECK(current_version >= 1),
+    published_version INTEGER,
+    created_at TEXT NOT NULL,
+    UNIQUE(site_id, external_key)
+);
+CREATE TABLE IF NOT EXISTS story_revisions (
+    story_id TEXT NOT NULL REFERENCES stories(story_id),
+    version INTEGER NOT NULL CHECK(version >= 1),
+    revision_type TEXT NOT NULL,
+    content_json TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    change_reason TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    parent_version INTEGER,
+    PRIMARY KEY(story_id, version)
+);
+CREATE TABLE IF NOT EXISTS consent_statements (
+    statement_id TEXT PRIMARY KEY,
+    story_id TEXT NOT NULL REFERENCES stories(story_id),
+    subject_key TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    granted INTEGER NOT NULL CHECK(granted IN (0, 1)),
+    statement_type TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS review_tasks (
+    story_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL,
+    lease_holder TEXT,
+    lease_expires_at TEXT,
+    decided_by TEXT,
+    decision TEXT,
+    opinion_json TEXT,
+    decided_at TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(story_id, version, stage)
+);
+CREATE TABLE IF NOT EXISTS redaction_marks (
+    mark_id TEXT PRIMARY KEY,
+    story_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    target TEXT NOT NULL,
+    action TEXT NOT NULL,
+    min_scope TEXT,
+    replacement TEXT,
+    reason TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS import_batches (
+    source_id TEXT PRIMARY KEY,
+    batch_hash TEXT NOT NULL,
+    story_ids_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 

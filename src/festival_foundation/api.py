@@ -11,10 +11,16 @@ from urllib.parse import parse_qs, urlparse
 from .errors import DomainError, ValidationError
 from .service import DomainService
 from .storage import Database
+from .stories_service import StoryService
+
+
+_NOT_HANDLED = object()
+not_handled = _NOT_HANDLED
 
 
 def route(service: DomainService, method: str, path: str, body: dict[str, Any] | None,
-          headers: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
+          headers: dict[str, str] | None = None,
+          stories: StoryService | None = None) -> tuple[int, dict[str, Any]]:
     """把一个 HTTP 语义请求分派到领域服务。"""
 
     headers = headers or {}
@@ -48,6 +54,10 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+        if stories is not None:
+            result = _story_route(stories, method, parsed, body, actor_id)
+            if result is not not_handled:
+                return result
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
@@ -55,10 +65,65 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
         return 400, {"error": "invalid_request", "message": str(exc)}
 
 
+def _story_route(stories: StoryService, method, parsed, body: dict[str, Any],
+                 actor_id: str):
+    path = parsed.path
+    query = parse_qs(parsed.query)
+
+    def arg(name: str, default: str | None = None) -> str | None:
+        return query.get(name, [default])[0]
+
+    if method == "POST" and path == "/stories":
+        receipt = stories.submit_story(actor_id=actor_id, **body)
+        return (200 if receipt.replayed else 201), receipt.__dict__
+    if method == "GET" and path == "/stories":
+        site_id = arg("site_id", "")
+        if not site_id:
+            raise ValidationError("site_id 不能为空")
+        return 200, stories.list_stories(actor_id=actor_id, site_id=site_id)
+    if method == "POST" and path == "/story-corrections":
+        receipt = stories.submit_correction(actor_id=actor_id, **body)
+        return (200 if receipt.replayed else 201), receipt.__dict__
+    if method == "POST" and path == "/story-consents":
+        receipt = stories.record_consent(actor_id=actor_id, **body)
+        return (200 if receipt.replayed else 201), receipt.__dict__
+    if method == "POST" and path == "/story-visibility-narrowings":
+        receipt = stories.narrow_visibility(actor_id=actor_id, **body)
+        return (200 if receipt.replayed else 201), receipt.__dict__
+    if method == "POST" and path == "/redaction-marks":
+        receipt = stories.add_redaction_mark(actor_id=actor_id, **body)
+        return (200 if receipt.replayed else 201), receipt.__dict__
+    if method == "POST" and path == "/review-claims":
+        receipt = stories.claim_review(actor_id=actor_id, **body)
+        return (200 if receipt.replayed else 201), receipt.__dict__
+    if method == "POST" and path == "/review-decisions":
+        receipt = stories.decide_review(actor_id=actor_id, **body)
+        return (200 if receipt.replayed else 201), receipt.__dict__
+    if method == "POST" and path == "/story-publications":
+        receipt = stories.publish(actor_id=actor_id, **body)
+        return (200 if receipt.replayed else 201), receipt.__dict__
+    if method == "GET" and path == "/published-story":
+        story_id = arg("story_id", "")
+        if not story_id:
+            raise ValidationError("story_id 不能为空")
+        scope = arg("scope", "archive")
+        return 200, stories.published_view(actor_id=actor_id, story_id=story_id, scope=scope)
+    if method == "GET" and path == "/story-visibility-explanation":
+        story_id = arg("story_id", "")
+        if not story_id:
+            raise ValidationError("story_id 不能为空")
+        return 200, stories.explain_visibility(actor_id=actor_id, story_id=story_id)
+    if method == "POST" and path == "/story-imports":
+        receipt = stories.import_batch(actor_id=actor_id, **body)
+        return (200 if receipt.replayed else 201), receipt.__dict__
+    return not_handled
+
+
 class Handler(BaseHTTPRequestHandler):
     """把标准库 HTTP 请求转换为路由调用。"""
 
     service: DomainService
+    stories: StoryService | None = None
 
     def _handle(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -69,7 +134,8 @@ class Handler(BaseHTTPRequestHandler):
             self._write(400, {"error": "invalid_json", "message": "请求体必须是 UTF-8 JSON"})
             return
         status, payload = route(self.service, self.command, self.path, body,
-                                {"X-Actor-Id": self.headers.get("X-Actor-Id", "")})
+                                {"X-Actor-Id": self.headers.get("X-Actor-Id", "")},
+                                stories=self.stories)
         self._write(status, payload)
 
     def _write(self, status: int, payload: dict[str, Any]) -> None:
@@ -99,7 +165,9 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     database = Database(args.database)
-    Handler.service = DomainService(database)
+    service = DomainService(database)
+    Handler.service = service
+    Handler.stories = StoryService(database, service)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     try:
         server.serve_forever()
